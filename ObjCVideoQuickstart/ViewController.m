@@ -152,6 +152,10 @@
     // Create an audio track.
     if (!self.localAudioTrack) {
         self.localAudioTrack = [TVILocalAudioTrack track];
+
+        if (!self.localAudioTrack) {
+            [self logMessage:@"Failed to add audio track"];
+        }
     }
 
     // Create a video track which captures from the camera.
@@ -173,7 +177,7 @@
                                                                       block:^(TVIConnectOptionsBuilder * _Nonnull builder) {
 
         // Use the local media that we prepared earlier.
-        builder.audioTracks = @[ self.localAudioTrack ];
+        builder.audioTracks = self.localAudioTrack ? @[ self.localAudioTrack ] : @[ ];
         builder.videoTracks = self.localVideoTrack ? @[ self.localVideoTrack ] : @[ ];
 
         // The name of the Room where the Client will attempt to connect to. Please note that if you pass an empty
