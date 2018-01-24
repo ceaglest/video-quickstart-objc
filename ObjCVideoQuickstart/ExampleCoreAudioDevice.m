@@ -45,7 +45,7 @@ static int kInputBus = 1;
         const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
         const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
 
-        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:TVIAudioChannelsStereo
+        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:TVIAudioChannelsMono
                                                          sampleRate:sessionSampleRate
                                                     framesPerBuffer:sessionFramesPerBuffer];
     }
@@ -105,7 +105,9 @@ static OSStatus playout_cb(void *refCon,
                            AudioBufferList *bufferList) {
     TVIAudioDeviceContext *context = (TVIAudioDeviceContext *)refCon;
 
-    assert(bufferList->mBuffers[0].mNumberChannels == 2);
+    assert(bufferList->mNumberBuffers == 1);
+    assert(bufferList->mBuffers[0].mNumberChannels == 1);
+
     readRenderData(context, bufferList->mBuffers[0].mData, bufferList->mBuffers[0].mDataByteSize);
 
     return 0;
@@ -117,15 +119,15 @@ static OSStatus playout_cb(void *refCon,
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
 
-    if (![session setPreferredSampleRate:self.renderingFormat.sampleRate error:&error]) {
+    if (![session setPreferredSampleRate:TVIAudioSampleRate48000 error:&error]) {
         NSLog(@"Error setting sample rate: %@", error);
     }
 
-    if (![session setPreferredOutputNumberOfChannels:self.renderingFormat.numberOfChannels error:&error]) {
+    if (![session setPreferredOutputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
         NSLog(@"Error setting number of output channels: %@", error);
     }
 
-    if (![session setPreferredInputNumberOfChannels:1 error:&error]) {
+    if (![session setPreferredInputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
         NSLog(@"Error setting number of input channels: %@", error);
     }
 
@@ -204,7 +206,7 @@ static OSStatus playout_cb(void *refCon,
     renderCallback.inputProc = playout_cb;
     renderCallback.inputProcRefCon = (void *)(self.renderingContext);
     status = AudioUnitSetProperty(_audioUnit, kAudioUnitProperty_SetRenderCallback,
-                                  kAudioUnitScope_Input, kOutputBus, &renderCallback,
+                                  kAudioUnitScope_Output, kOutputBus, &renderCallback,
                                   sizeof(renderCallback));
     if (status != 0) {
         NSLog(@"Could not set rendering callback!");
