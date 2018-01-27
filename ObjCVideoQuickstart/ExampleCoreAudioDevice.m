@@ -127,22 +127,13 @@ static OSStatus playout_cb(void *refCon,
         NSLog(@"Error setting number of output channels: %@", error);
     }
 
-    if (![session setPreferredInputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
-        NSLog(@"Error setting number of input channels: %@", error);
-    }
-
     // We want to be as close as possible to the 10 millisecond buffer size that the media engine needs. If there is
     // a mismatch then TwilioVideo will ensure that appropriately sized audio buffers are delivered.
     if (![session setPreferredIOBufferDuration:kPreferredIOBufferDuration error:&error]) {
         NSLog(@"Error setting IOBuffer duration: %@", error);
     }
 
-    AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker;
-
-    if (![session setCategory:AVAudioSessionCategoryPlayback
-                         mode:AVAudioSessionModeDefault
-                      options:options
-                        error:&error]) {
+    if (![session setCategory:AVAudioSessionCategoryPlayback error:&error]) {
         NSLog(@"Error setting session category: %@", error);
     }
 
@@ -150,6 +141,10 @@ static OSStatus playout_cb(void *refCon,
 
     if (![session setActive:YES error:&error]) {
         NSLog(@"Error activating AVAudioSession: %@", error);
+    }
+
+    if (![session setPreferredInputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
+        NSLog(@"Error setting number of input channels: %@", error);
     }
 }
 
