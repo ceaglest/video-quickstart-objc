@@ -8,7 +8,7 @@
 #import <TwilioVideo/TwilioVideo.h>
 
 /*
- *  ExampleCoreAudioDevice uses a RemoteIO audio unit to playback mono audio at up to 48 kHz.
+ *  ExampleCoreAudioDevice uses a RemoteIO audio unit to playback stereo audio at up to 48 kHz.
  *  In contrast to `TVIDefaultAudioDevice`, this class does not record audio and is intended for high quality playback.
  *  Since full duplex audio is not needed this device does not use the built in echo cancellation provided by
  *  CoreAudio's VoiceProcessingIO audio unit.

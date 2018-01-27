@@ -45,7 +45,7 @@ static int kInputBus = 1;
         const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
         const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
 
-        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:TVIAudioChannelsMono
+        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:TVIAudioChannelsStereo
                                                          sampleRate:sessionSampleRate
                                                     framesPerBuffer:sessionFramesPerBuffer];
     }
@@ -106,7 +106,7 @@ static OSStatus playout_cb(void *refCon,
     TVIAudioDeviceContext *context = (TVIAudioDeviceContext *)refCon;
 
     assert(bufferList->mNumberBuffers == 1);
-    assert(bufferList->mBuffers[0].mNumberChannels == 1);
+    assert(bufferList->mBuffers[0].mNumberChannels == 2);
 
     readRenderData(context, bufferList->mBuffers[0].mData, bufferList->mBuffers[0].mDataByteSize);
 
