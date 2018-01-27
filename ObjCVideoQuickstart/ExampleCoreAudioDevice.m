@@ -7,8 +7,16 @@
 
 #import "ExampleCoreAudioDevice.h"
 
-// We want to get as close to 10 msec buffers as possible, because this is what the media engine prefers.
+// We want to get as close to 10 msec buffers as possible because this is what the media engine prefers.
 static double kPreferredIOBufferDuration = 0.01;
+static size_t const kNumberOfChannels = 2;
+
+#if TARGET_IPHONE_SIMULATOR
+static uint32_t kPreferredSampleRate = 44100;
+#else
+static uint32_t kPreferredSampleRate = TVIAudioSampleRate48000;
+#endif
+
 // The RemoteIO audio unit uses bus 0 for ouptut, and bus 1 for input.
 static int kOutputBus = 0;
 static int kInputBus = 1;
@@ -54,7 +62,7 @@ static int kInputBus = 1;
         const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
         const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
 
-        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:TVIAudioChannelsStereo
+        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:kNumberOfChannels
                                                          sampleRate:sessionSampleRate
                                                     framesPerBuffer:sessionFramesPerBuffer];
     }
@@ -121,14 +129,26 @@ static OSStatus playout_cb(void *refCon,
                            UInt32 busNumber,
                            UInt32 numFrames,
                            AudioBufferList *bufferList) {
-    TVIAudioDeviceContext *context = (TVIAudioDeviceContext *)refCon;
-
     assert(bufferList->mNumberBuffers == 1);
     assert(bufferList->mBuffers[0].mNumberChannels == 2);
 
-    readRenderData(context, bufferList->mBuffers[0].mData, bufferList->mBuffers[0].mDataByteSize);
+    TVIAudioDeviceContext *context = (TVIAudioDeviceContext *)refCon;
+    int8_t *audioBuffer = (int8_t *)bufferList->mBuffers[0].mData;
+    UInt32 audioBufferSizeInBytes = bufferList->mBuffers[0].mDataByteSize;
 
-    return 0;
+    // Render silence if there are temporary mismatches.
+    // TODO: Detect size mismatches.
+    // Will there ever be a case where stopping the AudioUnit from audioContextThread is non blocking?
+    bool bufferSizeMatches = numFrames % 2 == 0;
+    if (!bufferSizeMatches) {
+        NSLog(@"Expected %u frames but got %u.", (unsigned int)numFrames, (unsigned int)numFrames);
+        *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
+        memset(audioBuffer, 0, audioBufferSizeInBytes);
+        return noErr;
+    }
+
+    readRenderData(context, audioBuffer, audioBufferSizeInBytes);
+    return noErr;
 }
 
 #pragma mark - Private (AVAudioSession and CoreAudio)
@@ -137,11 +157,11 @@ static OSStatus playout_cb(void *refCon,
     AVAudioSession *session = [AVAudioSession sharedInstance];
     NSError *error = nil;
 
-    if (![session setPreferredSampleRate:TVIAudioSampleRate48000 error:&error]) {
+    if (![session setPreferredSampleRate:kPreferredSampleRate error:&error]) {
         NSLog(@"Error setting sample rate: %@", error);
     }
 
-    if (![session setPreferredOutputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
+    if (![session setPreferredOutputNumberOfChannels:kNumberOfChannels error:&error]) {
         NSLog(@"Error setting number of output channels: %@", error);
     }
 
@@ -273,6 +293,7 @@ static OSStatus playout_cb(void *refCon,
 }
 
 - (void)handleAudioInterruption:(NSNotification *)notification {
+    // TODO: Move to self.renderingContextThread.
     AVAudioSessionInterruptionType type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
 
     if (type == AVAudioSessionInterruptionTypeBegan) {
@@ -285,6 +306,30 @@ static OSStatus playout_cb(void *refCon,
 }
 
 - (void)handleRouteChange:(NSNotification *)notification {
+    // Check if the sample rate, channels or buffer duration changed. and trigger a format change if it did.
+    AVAudioSessionRouteChangeReason reason = [notification.userInfo[AVAudioSessionRouteChangeReasonKey] unsignedIntegerValue];
+
+    switch (reason) {
+        case AVAudioSessionRouteChangeReasonUnknown:
+        case AVAudioSessionRouteChangeReasonNewDeviceAvailable:
+        case AVAudioSessionRouteChangeReasonOldDeviceUnavailable:
+            // Each device change might cause the actual sample rate or channel configuration of the session to change.
+        case AVAudioSessionRouteChangeReasonCategoryChange:
+            // In iOS 9.2+ switching routes from a BT device in control center may cause a category change.
+        case AVAudioSessionRouteChangeReasonOverride:
+        case AVAudioSessionRouteChangeReasonWakeFromSleep:
+        case AVAudioSessionRouteChangeReasonNoSuitableRouteForCategory:
+        case AVAudioSessionRouteChangeReasonRouteConfigurationChange:
+            // With CallKit, AVAudioSession may change the sample rate during a configuration change.
+            [self performSelector:@selector(handleValidRouteChange)
+                         onThread:self.renderingContextThread
+                       withObject:nil
+                    waitUntilDone:NO];
+            break;
+    }
+}
+
+- (void)handleValidRouteChange {
     // Nothing to process while we are interrupted. We will interrogate the AVAudioSession once the interruption ends.
     if (self.interrupted) {
         return;
@@ -292,7 +337,7 @@ static OSStatus playout_cb(void *refCon,
         return;
     }
 
-    // Check if the sample rate, channels or buffer duration changed. and trigger a format change if it did.
+    NSLog(@"A route change ocurred while we were not interrupted!");
 }
 
 - (void)handleMediaServiceLost:(NSNotification *)notification {
@@ -300,7 +345,10 @@ static OSStatus playout_cb(void *refCon,
 }
 
 - (void)handleMediaServiceRestored:(NSNotification *)notification {
-    [self startAudioUnit];
+    [self performSelector:@selector(startAudioUnit)
+                 onThread:self.renderingContextThread
+               withObject:nil
+            waitUntilDone:NO];
 }
 
 - (void)unregisterAVAudioSessionObservers {
