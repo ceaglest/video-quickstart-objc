@@ -15,13 +15,18 @@ static int kInputBus = 1;
 
 @interface ExampleCoreAudioDevice()
 
+@property (nonatomic, assign, getter=isInterrupted) BOOL interrupted;
 @property (nonatomic, assign) AudioUnit audioUnit;
+
 @property (nonatomic, strong, nullable) TVIAudioFormat *renderingFormat;
 @property (nonatomic, assign) TVIAudioDeviceContext renderingContext;
+@property (nonatomic, weak) NSThread *renderingContextThread;
 
 @end
 
 @implementation ExampleCoreAudioDevice
+
+#pragma mark - Init & Dealloc
 
 - (id)init {
     self = [super init];
@@ -32,7 +37,11 @@ static int kInputBus = 1;
     return self;
 }
 
-#pragma mark - TVIAudioDeviceRenderer.
+- (void)dealloc {
+    [self unregisterAVAudioSessionObservers];
+}
+
+#pragma mark - TVIAudioDeviceRenderer
 
 - (nullable TVIAudioFormat *)renderFormat {
     if (!_renderingFormat) {
@@ -55,6 +64,13 @@ static int kInputBus = 1;
 
 - (BOOL)initializeRenderer {
     /*
+     * TVIAudioRenderer methods are called on the media engine's worker thread. You may wish to synchronize outside
+     * control logic like handling AVAudioSession notifications with this thread.
+     */
+    self.renderingContextThread = [NSThread currentThread];
+    NSAssert(self.renderingContextThread != NULL, @"We need an NSThread to synchronize AVAudioSession notifications with!");
+
+    /*
      * In this example we don't need any fixed size buffers or other pre-allocated resources. We will simply write
      * directly to the AudioBufferList provided in the AudioUnit's rendering callback.
      */
@@ -64,9 +80,11 @@ static int kInputBus = 1;
 - (BOOL)startRendering:(nonnull TVIAudioDeviceContext)context {
     self.renderingContext = context;
 
-    // Setup the Core Audio graph for playback.
     NSAssert(self.audioUnit == NULL, @"The audio unit should not be created yet.");
-    return [self setupAudioUnit];
+    if (![self setupAudioUnit]) {
+        return NO;
+    }
+    return [self startAudioUnit];
 }
 
 - (BOOL)stopRendering {
@@ -75,7 +93,7 @@ static int kInputBus = 1;
     return YES;
 }
 
-#pragma mark - TVIAudioDeviceCapturer.
+#pragma mark - TVIAudioDeviceCapturer
 
 - (nullable TVIAudioFormat *)captureFormat {
     // We don't support capturing, and return a nil format to indicate this. The other TVIAudioDeviceCapturer methods
@@ -215,22 +233,27 @@ static OSStatus playout_cb(void *refCon,
         return NO;
     }
 
-    status = AudioOutputUnitStart(_audioUnit);
+    return YES;
+}
+
+- (BOOL)startAudioUnit {
+    OSStatus status = AudioOutputUnitStart(_audioUnit);
     if (status != 0) {
         NSLog(@"Could not start the audio unit!");
         return NO;
     }
-
     return YES;
 }
 
-- (void)registerAVAudioSessionObservers {
-    // TODO:
+- (BOOL)stopAudioUnit {
+    OSStatus status = AudioOutputUnitStop(_audioUnit);
+    if (status != 0) {
+        NSLog(@"Could not stop the audio unit!");
+        return NO;
+    }
+    return YES;
 }
 
-- (void)unregisterAVAudioSessionObservers {
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-}
 
 - (void)teardownAudioUnit {
     if (_audioUnit) {
@@ -240,4 +263,47 @@ static OSStatus playout_cb(void *refCon,
     }
 }
 
+- (void)registerAVAudioSessionObservers {
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+
+    [center addObserver:self selector:@selector(handleAudioInterruption:) name:AVAudioSessionInterruptionNotification object:nil];
+    [center addObserver:self selector:@selector(handleRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
+    [center addObserver:self selector:@selector(handleMediaServiceLost:) name:AVAudioSessionMediaServicesWereLostNotification object:nil];
+    [center addObserver:self selector:@selector(handleMediaServiceRestored:) name:AVAudioSessionMediaServicesWereResetNotification object:nil];
+}
+
+- (void)handleAudioInterruption:(NSNotification *)notification {
+    AVAudioSessionInterruptionType type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+
+    if (type == AVAudioSessionInterruptionTypeBegan) {
+        self.interrupted = YES;
+        [self stopAudioUnit];
+    } else {
+        self.interrupted = NO;
+        [self startAudioUnit];
+    }
+}
+
+- (void)handleRouteChange:(NSNotification *)notification {
+    // Nothing to process while we are interrupted. We will interrogate the AVAudioSession once the interruption ends.
+    if (self.interrupted) {
+        return;
+    } else if (_audioUnit == NULL) {
+        return;
+    }
+
+    // Check if the sample rate, channels or buffer duration changed. and trigger a format change if it did.
+}
+
+- (void)handleMediaServiceLost:(NSNotification *)notification {
+
+}
+
+- (void)handleMediaServiceRestored:(NSNotification *)notification {
+    [self startAudioUnit];
+}
+
+- (void)unregisterAVAudioSessionObservers {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
 @end
