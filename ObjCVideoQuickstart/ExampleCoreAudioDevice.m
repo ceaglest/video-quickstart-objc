@@ -14,7 +14,7 @@ static size_t const kNumberOfChannels = 2;
 #if TARGET_IPHONE_SIMULATOR
 static uint32_t kPreferredSampleRate = 44100;
 #else
-static uint32_t kPreferredSampleRate = TVIAudioSampleRate48000;
+static uint32_t kPreferredSampleRate = 48000;
 #endif
 
 // The RemoteIO audio unit uses bus 0 for ouptut, and bus 1 for input.
