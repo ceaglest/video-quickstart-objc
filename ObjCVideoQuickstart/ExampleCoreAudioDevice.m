@@ -72,8 +72,8 @@ static int kInputBus = 1;
 
 - (BOOL)initializeRenderer {
     /*
-     * TVIAudioRenderer methods are called on the media engine's worker thread. You may wish to synchronize outside
-     * control logic like handling AVAudioSession notifications with this thread.
+     * TVIAudioDeviceRenderer methods are called on the media engine's worker thread. You may wish to synchronize
+     * outside control logic like handling AVAudioSession notifications with this thread.
      */
     self.renderingContextThread = [NSThread currentThread];
     NSAssert(self.renderingContextThread != NULL, @"We need an NSThread to synchronize AVAudioSession notifications with!");
@@ -132,7 +132,7 @@ static OSStatus playout_cb(void *refCon,
     assert(bufferList->mNumberBuffers == 1);
     assert(bufferList->mBuffers[0].mNumberChannels == 2);
 
-    TVIAudioDeviceContext *context = (TVIAudioDeviceContext *)refCon;
+    TVIAudioDeviceContext context = (TVIAudioDeviceContext)refCon;
     int8_t *audioBuffer = (int8_t *)bufferList->mBuffers[0].mData;
     UInt32 audioBufferSizeInBytes = bufferList->mBuffers[0].mDataByteSize;
 
@@ -235,6 +235,7 @@ static OSStatus playout_cb(void *refCon,
     }
 
     // Setup the rendering callback.
+    // TODO: Make our own context struct here.
     AURenderCallbackStruct renderCallback;
     renderCallback.inputProc = playout_cb;
     renderCallback.inputProcRefCon = (void *)(self.renderingContext);
@@ -354,4 +355,5 @@ static OSStatus playout_cb(void *refCon,
 - (void)unregisterAVAudioSessionObservers {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
+
 @end
