@@ -17,6 +17,11 @@ static uint32_t kPreferredSampleRate = 44100;
 static uint32_t kPreferredSampleRate = 48000;
 #endif
 
+typedef struct ExampleCoreAudioContext {
+    TVIAudioDeviceContext deviceContext;
+    size_t framesPerBuffer;
+} ExampleCoreAudioContext;
+
 // The RemoteIO audio unit uses bus 0 for ouptut, and bus 1 for input.
 static int kOutputBus = 0;
 static int kInputBus = 1;
@@ -27,7 +32,7 @@ static int kInputBus = 1;
 @property (nonatomic, assign) AudioUnit audioUnit;
 
 @property (nonatomic, strong, nullable) TVIAudioFormat *renderingFormat;
-@property (nonatomic, assign) TVIAudioDeviceContext renderingContext;
+@property (nonatomic, assign) ExampleCoreAudioContext *renderingContext;
 @property (nonatomic, weak) NSThread *renderingContextThread;
 
 @end
@@ -53,18 +58,11 @@ static int kInputBus = 1;
 
 - (nullable TVIAudioFormat *)renderFormat {
     if (!_renderingFormat) {
-
         /*
-         * For now, we will assume that the AVAudioSession has already been configured and started and that the values
+         * Assume that the AVAudioSession has already been configured and started and that the values
          * for sampleRate and IOBufferDuration are final.
          */
-        const NSTimeInterval sessionBufferDuration = [AVAudioSession sharedInstance].IOBufferDuration;
-        const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
-        const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
-
-        _renderingFormat = [[TVIAudioFormat alloc] initWithChannels:kNumberOfChannels
-                                                         sampleRate:sessionSampleRate
-                                                    framesPerBuffer:sessionFramesPerBuffer];
+        _renderingFormat = [[self class] activeRenderingFormat];
     }
 
     return _renderingFormat;
@@ -73,7 +71,7 @@ static int kInputBus = 1;
 - (BOOL)initializeRenderer {
     /*
      * TVIAudioDeviceRenderer methods are called on the media engine's worker thread. You may wish to synchronize
-     * outside control logic like handling AVAudioSession notifications with this thread.
+     * outside control logic like handling of AVAudioSession notifications with this thread.
      */
     self.renderingContextThread = [NSThread currentThread];
     NSAssert(self.renderingContextThread != NULL, @"We need an NSThread to synchronize AVAudioSession notifications with!");
@@ -86,7 +84,10 @@ static int kInputBus = 1;
 }
 
 - (BOOL)startRendering:(nonnull TVIAudioDeviceContext)context {
-    self.renderingContext = context;
+    NSAssert(self.renderingContext == NULL, @"Should not have any rendering context.");
+    self.renderingContext = malloc(sizeof(ExampleCoreAudioContext));
+    self.renderingContext->deviceContext = context;
+    self.renderingContext->framesPerBuffer = _renderingFormat.framesPerBuffer;
 
     NSAssert(self.audioUnit == NULL, @"The audio unit should not be created yet.");
     if (![self setupAudioUnit]) {
@@ -96,8 +97,14 @@ static int kInputBus = 1;
 }
 
 - (BOOL)stopRendering {
+    [self stopAudioUnit];
     [self teardownAudioUnit];
-    self.renderingContext = nil;
+
+    NSAssert(self.renderingContext != NULL, @"Should have a rendering context.");
+    free(self.renderingContext);
+    self.renderingContext = NULL;
+    self.renderingContextThread = nil;
+
     return YES;
 }
 
@@ -132,26 +139,34 @@ static OSStatus playout_cb(void *refCon,
     assert(bufferList->mNumberBuffers == 1);
     assert(bufferList->mBuffers[0].mNumberChannels == 2);
 
-    TVIAudioDeviceContext context = (TVIAudioDeviceContext)refCon;
+    ExampleCoreAudioContext *context = (ExampleCoreAudioContext *)refCon;
     int8_t *audioBuffer = (int8_t *)bufferList->mBuffers[0].mData;
     UInt32 audioBufferSizeInBytes = bufferList->mBuffers[0].mDataByteSize;
 
     // Render silence if there are temporary mismatches.
-    // TODO: Detect size mismatches.
-    // Will there ever be a case where stopping the AudioUnit from audioContextThread is non blocking?
-    bool bufferSizeMatches = numFrames % 2 == 0;
-    if (!bufferSizeMatches) {
-        NSLog(@"Expected %u frames but got %u.", (unsigned int)numFrames, (unsigned int)numFrames);
+    // TODO: Will there ever be a case where stopping the AudioUnit from audioContextThread is non blocking?
+    if (numFrames != context->framesPerBuffer) {
+        NSLog(@"Expected %u frames but got %u.", (unsigned int)context->framesPerBuffer, (unsigned int)numFrames);
         *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         memset(audioBuffer, 0, audioBufferSizeInBytes);
         return noErr;
     }
 
-    readRenderData(context, audioBuffer, audioBufferSizeInBytes);
+    readRenderData(context->deviceContext, audioBuffer, audioBufferSizeInBytes);
     return noErr;
 }
 
 #pragma mark - Private (AVAudioSession and CoreAudio)
+
++ (nullable TVIAudioFormat *)activeRenderingFormat {
+    const NSTimeInterval sessionBufferDuration = [AVAudioSession sharedInstance].IOBufferDuration;
+    const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
+    const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
+
+    return [[TVIAudioFormat alloc] initWithChannels:kNumberOfChannels
+                                         sampleRate:sessionSampleRate
+                                    framesPerBuffer:sessionFramesPerBuffer];
+}
 
 - (void)setupAVAudioSession {
     AVAudioSession *session = [AVAudioSession sharedInstance];
@@ -235,7 +250,6 @@ static OSStatus playout_cb(void *refCon,
     }
 
     // Setup the rendering callback.
-    // TODO: Make our own context struct here.
     AURenderCallbackStruct renderCallback;
     renderCallback.inputProc = playout_cb;
     renderCallback.inputProcRefCon = (void *)(self.renderingContext);
@@ -294,9 +308,14 @@ static OSStatus playout_cb(void *refCon,
 }
 
 - (void)handleAudioInterruption:(NSNotification *)notification {
-    // TODO: Move to self.renderingContextThread.
-    AVAudioSessionInterruptionType type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+    [self performSelector:@selector(handleAudioInterruptionContext:)
+                 onThread:self.renderingContextThread
+               withObject:notification.userInfo[AVAudioSessionInterruptionTypeKey]
+            waitUntilDone:NO];
+}
 
+- (void)handleAudioInterruptionContext:(NSNumber *)interruptionType {
+    AVAudioSessionInterruptionType type = [interruptionType unsignedIntegerValue];
     if (type == AVAudioSessionInterruptionTypeBegan) {
         self.interrupted = YES;
         [self stopAudioUnit];
@@ -322,6 +341,8 @@ static OSStatus playout_cb(void *refCon,
         case AVAudioSessionRouteChangeReasonNoSuitableRouteForCategory:
         case AVAudioSessionRouteChangeReasonRouteConfigurationChange:
             // With CallKit, AVAudioSession may change the sample rate during a configuration change.
+
+            // If a valid route change occurs we may want to update our audio graph to reflect the new output device.
             [self performSelector:@selector(handleValidRouteChange)
                          onThread:self.renderingContextThread
                        withObject:nil
@@ -338,11 +359,25 @@ static OSStatus playout_cb(void *refCon,
         return;
     }
 
-    NSLog(@"A route change ocurred while we were not interrupted!");
+    NSLog(@"A route change ocurred while the AudioUnit was started. Checking the active audio format.");
+
+    // Determine if the format actually changed. We only care about sample rate and buffer sizes.
+    TVIAudioFormat *activeFormat = [[self class] activeRenderingFormat];
+
+    // TODO: Need to implement isEqual: and description: for TVIAudioFormat.
+    if (activeFormat.sampleRate != _renderingFormat.sampleRate ||
+        activeFormat.framesPerBuffer != _renderingFormat.framesPerBuffer) {
+        // Signal a change by clearing our cached format, and allowing TVIAudioDevice to drive the process.
+        _renderingFormat = nil;
+        renderFormatChanged(self.renderingContext);
+    }
 }
 
 - (void)handleMediaServiceLost:(NSNotification *)notification {
-
+    [self performSelector:@selector(stopAudioUnit)
+                 onThread:self.renderingContextThread
+               withObject:nil
+            waitUntilDone:NO];
 }
 
 - (void)handleMediaServiceRestored:(NSNotification *)notification {
