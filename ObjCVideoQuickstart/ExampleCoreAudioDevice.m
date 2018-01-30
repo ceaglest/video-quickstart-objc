@@ -308,10 +308,12 @@ static OSStatus playout_cb(void *refCon,
 }
 
 - (void)handleAudioInterruption:(NSNotification *)notification {
-    [self performSelector:@selector(handleAudioInterruptionContext:)
-                 onThread:self.renderingContextThread
-               withObject:notification.userInfo[AVAudioSessionInterruptionTypeKey]
-            waitUntilDone:NO];
+    // TODO: Perform in a thread safe manner.
+    [self handleAudioInterruptionContext:notification.userInfo[AVAudioSessionInterruptionTypeKey]];
+//    [self performSelector:@selector(handleAudioInterruptionContext:)
+//                 onThread:self.renderingContextThread
+//               withObject:notification.userInfo[AVAudioSessionInterruptionTypeKey]
+//            waitUntilDone:NO];
 }
 
 - (void)handleAudioInterruptionContext:(NSNumber *)interruptionType {
@@ -343,10 +345,12 @@ static OSStatus playout_cb(void *refCon,
             // With CallKit, AVAudioSession may change the sample rate during a configuration change.
 
             // If a valid route change occurs we may want to update our audio graph to reflect the new output device.
-            [self performSelector:@selector(handleValidRouteChange)
-                         onThread:self.renderingContextThread
-                       withObject:nil
-                    waitUntilDone:NO];
+            // TODO: Perform in a thread safe manner.
+            [self handleValidRouteChange];
+//            [self performSelector:@selector(handleValidRouteChange)
+//                         onThread:self.renderingContextThread
+//                       withObject:nil
+//                    waitUntilDone:NO];
             break;
     }
 }
@@ -374,17 +378,21 @@ static OSStatus playout_cb(void *refCon,
 }
 
 - (void)handleMediaServiceLost:(NSNotification *)notification {
-    [self performSelector:@selector(stopAudioUnit)
-                 onThread:self.renderingContextThread
-               withObject:nil
-            waitUntilDone:NO];
+    // TODO: Perform in a thread safe manner.
+    [self stopAudioUnit];
+//    [self performSelector:@selector(stopAudioUnit)
+//                 onThread:self.renderingContextThread
+//               withObject:nil
+//            waitUntilDone:NO];
 }
 
 - (void)handleMediaServiceRestored:(NSNotification *)notification {
-    [self performSelector:@selector(startAudioUnit)
-                 onThread:self.renderingContextThread
-               withObject:nil
-            waitUntilDone:NO];
+    // TODO: Perform in a thread safe manner.
+    [self startAudioUnit];
+//    [self performSelector:@selector(startAudioUnit)
+//                 onThread:self.renderingContextThread
+//               withObject:nil
+//            waitUntilDone:NO];
 }
 
 - (void)unregisterAVAudioSessionObservers {
