@@ -9,6 +9,7 @@
 
 // We want to get as close to 10 msec buffers as possible because this is what the media engine prefers.
 static double kPreferredIOBufferDuration = 0.01;
+// We will use stereo playback where available. Some audio routes may be restricted to mono only.
 static size_t const kNumberOfChannels = 2;
 
 #if TARGET_IPHONE_SIMULATOR
@@ -137,7 +138,8 @@ static OSStatus playout_cb(void *refCon,
                            UInt32 numFrames,
                            AudioBufferList *bufferList) {
     assert(bufferList->mNumberBuffers == 1);
-    assert(bufferList->mBuffers[0].mNumberChannels == 2);
+    assert(bufferList->mBuffers[0].mNumberChannels <= 2);
+    assert(bufferList->mBuffers[0].mNumberChannels > 0);
 
     ExampleCoreAudioContext *context = (ExampleCoreAudioContext *)refCon;
     int8_t *audioBuffer = (int8_t *)bufferList->mBuffers[0].mData;
@@ -161,9 +163,11 @@ static OSStatus playout_cb(void *refCon,
 + (nullable TVIAudioFormat *)activeRenderingFormat {
     const NSTimeInterval sessionBufferDuration = [AVAudioSession sharedInstance].IOBufferDuration;
     const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
+    const NSInteger sessionOutputChannels = [AVAudioSession sharedInstance].outputNumberOfChannels;
+    size_t rendererChannels = sessionOutputChannels >= TVIAudioChannelsStereo ? TVIAudioChannelsStereo : TVIAudioChannelsMono;
     const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
 
-    return [[TVIAudioFormat alloc] initWithChannels:kNumberOfChannels
+    return [[TVIAudioFormat alloc] initWithChannels:(size_t)rendererChannels
                                          sampleRate:sessionSampleRate
                                     framesPerBuffer:sessionFramesPerBuffer];
 }
@@ -370,10 +374,13 @@ static OSStatus playout_cb(void *refCon,
 
     // TODO: Need to implement isEqual: and description: for TVIAudioFormat.
     if (activeFormat.sampleRate != _renderingFormat.sampleRate ||
-        activeFormat.framesPerBuffer != _renderingFormat.framesPerBuffer) {
+        activeFormat.framesPerBuffer != _renderingFormat.framesPerBuffer ||
+        activeFormat.numberOfChannels != _renderingFormat.numberOfChannels) {
+        NSLog(@"Rendering format changed. Restarting with %lu channels / %u Hz / %zu bytes.",
+              activeFormat.numberOfChannels, activeFormat.sampleRate, activeFormat.bufferSize);
         // Signal a change by clearing our cached format, and allowing TVIAudioDevice to drive the process.
         _renderingFormat = nil;
-        renderFormatChanged(self.renderingContext);
+        renderFormatChanged(self.renderingContext->deviceContext);
     }
 }
 
