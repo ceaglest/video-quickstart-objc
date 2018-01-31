@@ -203,8 +203,10 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
         NSLog(@"Error activating AVAudioSession: %@", error);
     }
 
-    if (![session setPreferredInputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
-        NSLog(@"Error setting number of input channels: %@", error);
+    if (session.maximumInputNumberOfChannels > 0) {
+        if (![session setPreferredInputNumberOfChannels:TVIAudioChannelsMono error:&error]) {
+            NSLog(@"Error setting number of input channels: %@", error);
+        }
     }
 }
 
