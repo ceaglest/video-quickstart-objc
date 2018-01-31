@@ -131,12 +131,12 @@ static int kInputBus = 1;
 
 #pragma mark - Private (AudioUnit callbacks)
 
-static OSStatus playout_cb(void *refCon,
-                           AudioUnitRenderActionFlags *actionFlags,
-                           const AudioTimeStamp *timestamp,
-                           UInt32 busNumber,
-                           UInt32 numFrames,
-                           AudioBufferList *bufferList) {
+static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
+                                                      AudioUnitRenderActionFlags *actionFlags,
+                                                      const AudioTimeStamp *timestamp,
+                                                      UInt32 busNumber,
+                                                      UInt32 numFrames,
+                                                      AudioBufferList *bufferList) {
     assert(bufferList->mNumberBuffers == 1);
     assert(bufferList->mBuffers[0].mNumberChannels <= 2);
     assert(bufferList->mBuffers[0].mNumberChannels > 0);
@@ -148,6 +148,7 @@ static OSStatus playout_cb(void *refCon,
     // Render silence if there are temporary mismatches.
     // TODO: Will there ever be a case where stopping the AudioUnit from audioContextThread is non blocking?
     if (numFrames != context->framesPerBuffer) {
+        // Generally, it's not a good idea to NSLog on a real-time audio thread. ....
         NSLog(@"Expected %u frames but got %u.", (unsigned int)context->framesPerBuffer, (unsigned int)numFrames);
         *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         memset(audioBuffer, 0, audioBufferSizeInBytes);
@@ -163,9 +164,9 @@ static OSStatus playout_cb(void *refCon,
 + (nullable TVIAudioFormat *)activeRenderingFormat {
     const NSTimeInterval sessionBufferDuration = [AVAudioSession sharedInstance].IOBufferDuration;
     const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
+    const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
     const NSInteger sessionOutputChannels = [AVAudioSession sharedInstance].outputNumberOfChannels;
     size_t rendererChannels = sessionOutputChannels >= TVIAudioChannelsStereo ? TVIAudioChannelsStereo : TVIAudioChannelsMono;
-    const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
 
     return [[TVIAudioFormat alloc] initWithChannels:(size_t)rendererChannels
                                          sampleRate:sessionSampleRate
@@ -184,8 +185,10 @@ static OSStatus playout_cb(void *refCon,
         NSLog(@"Error setting number of output channels: %@", error);
     }
 
-    // We want to be as close as possible to the 10 millisecond buffer size that the media engine needs. If there is
-    // a mismatch then TwilioVideo will ensure that appropriately sized audio buffers are delivered.
+    /*
+     * We want to be as close as possible to the 10 millisecond buffer size that the media engine needs. If there is
+     * a mismatch then TwilioVideo will ensure that appropriately sized audio buffers are delivered.
+     */
     if (![session setPreferredIOBufferDuration:kPreferredIOBufferDuration error:&error]) {
         NSLog(@"Error setting IOBuffer duration: %@", error);
     }
@@ -222,7 +225,10 @@ static OSStatus playout_cb(void *refCon,
         return NO;
     }
 
-    // Configure the RemoteIO audio unit.
+    /*
+     * Configure the RemoteIO audio unit. Our rendering format attempts to match what AVAudioSession requires to
+     * prevent any additional format conversions after the media engine has mixed our playout audio.
+     */
     AudioStreamBasicDescription streamDescription = self.renderingFormat.streamDescription;
 
     UInt32 enableOutput = 1;
@@ -255,7 +261,7 @@ static OSStatus playout_cb(void *refCon,
 
     // Setup the rendering callback.
     AURenderCallbackStruct renderCallback;
-    renderCallback.inputProc = playout_cb;
+    renderCallback.inputProc = ExampleCoreAudioDevicePlayoutCallback;
     renderCallback.inputProcRefCon = (void *)(self.renderingContext);
     status = AudioUnitSetProperty(_audioUnit, kAudioUnitProperty_SetRenderCallback,
                                   kAudioUnitScope_Output, kOutputBus, &renderCallback,
