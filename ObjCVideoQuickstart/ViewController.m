@@ -155,18 +155,9 @@
 
 - (void)prepareLocalMedia {
     
-    // We will share local audio and video when we connect to room.
-    
-    // Create an audio track.
-    if (!self.localAudioTrack) {
-        self.localAudioTrack = [TVILocalAudioTrack trackWithOptions:nil
-                                                            enabled:YES
-                                                               name:@"Microphone"];
+    // We will share local video when we connect to room.
 
-        if (!self.localAudioTrack) {
-            [self logMessage:@"Failed to add audio track"];
-        }
-    }
+    // For now this example does not share audio. The custom audio device example will be moved elsewhere before release.
 
     // Create a video track which captures from the camera.
     if (!self.localVideoTrack) {
