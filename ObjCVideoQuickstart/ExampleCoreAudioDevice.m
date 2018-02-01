@@ -34,7 +34,6 @@ static int kInputBus = 1;
 
 @property (nonatomic, strong, nullable) TVIAudioFormat *renderingFormat;
 @property (nonatomic, assign) ExampleCoreAudioContext *renderingContext;
-@property (nonatomic, weak) NSThread *renderingContextThread;
 
 @end
 
@@ -71,13 +70,6 @@ static int kInputBus = 1;
 
 - (BOOL)initializeRenderer {
     /*
-     * TVIAudioDeviceRenderer methods are called on the media engine's worker thread. You may wish to synchronize
-     * outside control logic like handling of AVAudioSession notifications with this thread.
-     */
-    self.renderingContextThread = [NSThread currentThread];
-    NSAssert(self.renderingContextThread != NULL, @"We need an NSThread to synchronize AVAudioSession notifications with!");
-
-    /*
      * In this example we don't need any fixed size buffers or other pre-allocated resources. We will simply write
      * directly to the AudioBufferList provided in the AudioUnit's rendering callback.
      */
@@ -104,7 +96,6 @@ static int kInputBus = 1;
     NSAssert(self.renderingContext != NULL, @"Should have a rendering context.");
     free(self.renderingContext);
     self.renderingContext = NULL;
-    self.renderingContextThread = nil;
 
     return YES;
 }
@@ -155,7 +146,8 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
         return noErr;
     }
 
-    readRenderData(context->deviceContext, audioBuffer, audioBufferSizeInBytes);
+    // Pull decoded, mixed down audio data from the media engine. We've confirmed that the buffer sizes are equal.
+    TVIAudioDeviceReadRenderData(context->deviceContext, audioBuffer, audioBufferSizeInBytes);
     return noErr;
 }
 
@@ -380,15 +372,11 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
     // Determine if the format actually changed. We only care about sample rate and buffer sizes.
     TVIAudioFormat *activeFormat = [[self class] activeRenderingFormat];
 
-    // TODO: Need to implement isEqual: and description: for TVIAudioFormat.
-    if (activeFormat.sampleRate != _renderingFormat.sampleRate ||
-        activeFormat.framesPerBuffer != _renderingFormat.framesPerBuffer ||
-        activeFormat.numberOfChannels != _renderingFormat.numberOfChannels) {
-        NSLog(@"Rendering format changed. Restarting with %lu channels / %u Hz / %zu bytes.",
-              activeFormat.numberOfChannels, activeFormat.sampleRate, activeFormat.bufferSize);
+    if (![activeFormat isEqual:_renderingFormat]) {
+        NSLog(@"Rendering format changed. Restarting with %@", activeFormat);
         // Signal a change by clearing our cached format, and allowing TVIAudioDevice to drive the process.
         _renderingFormat = nil;
-        renderFormatChanged(self.renderingContext->deviceContext);
+        TVIAudioDeviceFormatChanged(self.renderingContext->deviceContext);
     }
 }
 
