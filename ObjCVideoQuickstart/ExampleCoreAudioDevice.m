@@ -45,7 +45,7 @@ static size_t kMaximumFramesPerBuffer = 1024;
 - (id)init {
     self = [super init];
     if (self) {
-        // Setup the AVAudioSession early for simplicity.
+        // Setup the AVAudioSession early for simplicity. You could also defer to `startRendering:` and `stopRendering:`.
         [self setupAVAudioSession];
     }
     return self;
@@ -108,25 +108,33 @@ static size_t kMaximumFramesPerBuffer = 1024;
 }
 
 - (BOOL)startRendering:(nonnull TVIAudioDeviceContext)context {
-    NSAssert(self.renderingContext == NULL, @"Should not have any rendering context.");
-    self.renderingContext = malloc(sizeof(ExampleCoreAudioContext));
-    self.renderingContext->deviceContext = context;
-    self.renderingContext->framesPerBuffer = _renderingFormat.framesPerBuffer;
+    @synchronized(self) {
+        NSAssert(self.renderingContext == NULL, @"Should not have any rendering context.");
 
-    NSAssert(self.audioUnit == NULL, @"The audio unit should not be created yet.");
-    if (![self setupAudioUnit]) {
-        return NO;
+        self.renderingContext = malloc(sizeof(ExampleCoreAudioContext));
+        self.renderingContext->deviceContext = context;
+        self.renderingContext->framesPerBuffer = _renderingFormat.framesPerBuffer;
+
+        NSAssert(self.audioUnit == NULL, @"The audio unit should not be created yet.");
+        if (![self setupAudioUnit:self.renderingContext]) {
+            free(self.renderingContext);
+            self.renderingContext = NULL;
+            return NO;
+        }
     }
     return [self startAudioUnit];
 }
 
 - (BOOL)stopRendering {
     [self stopAudioUnit];
-    [self teardownAudioUnit];
 
-    NSAssert(self.renderingContext != NULL, @"Should have a rendering context.");
-    free(self.renderingContext);
-    self.renderingContext = NULL;
+    @synchronized(self) {
+        [self teardownAudioUnit];
+
+        NSAssert(self.renderingContext != NULL, @"Should have a rendering context.");
+        free(self.renderingContext);
+        self.renderingContext = NULL;
+    }
 
     return YES;
 }
@@ -243,7 +251,7 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
     }
 }
 
-- (BOOL)setupAudioUnit {
+- (BOOL)setupAudioUnit:(ExampleCoreAudioContext *)context {
     // Find and instantiate the RemoteIO audio unit.
     AudioComponentDescription audioUnitDescription = [[self class] audioUnitDescription];
     AudioComponent audioComponent = AudioComponentFindNext(NULL, &audioUnitDescription);
@@ -297,7 +305,7 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
     // Setup the rendering callback.
     AURenderCallbackStruct renderCallback;
     renderCallback.inputProc = ExampleCoreAudioDevicePlayoutCallback;
-    renderCallback.inputProcRefCon = (void *)(self.renderingContext);
+    renderCallback.inputProcRefCon = (void *)(context);
     status = AudioUnitSetProperty(_audioUnit, kAudioUnitProperty_SetRenderCallback,
                                   kAudioUnitScope_Output, kOutputBus, &renderCallback,
                                   sizeof(renderCallback));
@@ -362,29 +370,33 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
 - (void)handleAudioInterruption:(NSNotification *)notification {
     AVAudioSessionInterruptionType type = [notification.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
 
-    if (self.renderingContext) {
-        TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
-            if (type == AVAudioSessionInterruptionTypeBegan) {
-                NSLog(@"Interruption began.");
-                self.interrupted = YES;
-                [self stopAudioUnit];
-            } else {
-                NSLog(@"Interruption ended.");
-                self.interrupted = NO;
-                [self startAudioUnit];
-            }
-        });
+    @synchronized(self) {
+        if (self.renderingContext) {
+            TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
+                if (type == AVAudioSessionInterruptionTypeBegan) {
+                    NSLog(@"Interruption began.");
+                    self.interrupted = YES;
+                    [self stopAudioUnit];
+                } else {
+                    NSLog(@"Interruption ended.");
+                    self.interrupted = NO;
+                    [self startAudioUnit];
+                }
+            });
+        }
     }
 }
 
 - (void)handleApplicationDidBecomeActive:(NSNotification *)notification {
-    if (self.renderingContext) {
-        TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
-            if (self.interrupted) {
-                self.interrupted = NO;
-                [self startAudioUnit];
-            }
-        });
+    @synchronized(self) {
+        if (self.renderingContext) {
+            TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
+                if (self.interrupted) {
+                    self.interrupted = NO;
+                    [self startAudioUnit];
+                }
+            });
+        }
     }
 }
 
@@ -405,10 +417,12 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
         case AVAudioSessionRouteChangeReasonRouteConfigurationChange:
             // With CallKit, AVAudioSession may change the sample rate during a configuration change.
             // If a valid route change occurs we may want to update our audio graph to reflect the new output device.
-            if (self.renderingContext) {
-                TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
-                    [self handleValidRouteChange];
-                });
+            @synchronized(self) {
+                if (self.renderingContext) {
+                    TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
+                        [self handleValidRouteChange];
+                    });
+                }
             }
             break;
     }
@@ -436,18 +450,22 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
 }
 
 - (void)handleMediaServiceLost:(NSNotification *)notification {
-    if (self.renderingContext) {
-        TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
-            [self stopAudioUnit];
-        });
+    @synchronized(self) {
+        if (self.renderingContext) {
+            TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
+                [self stopAudioUnit];
+            });
+        }
     }
 }
 
 - (void)handleMediaServiceRestored:(NSNotification *)notification {
-    if (self.renderingContext) {
-        TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
-            [self startAudioUnit];
-        });
+    @synchronized(self) {
+        if (self.renderingContext) {
+            TVIAudioDeviceExecuteWorkerBlock(self.renderingContext->deviceContext, ^{
+                [self startAudioUnit];
+            });
+        }
     }
 }
 
