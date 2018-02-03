@@ -27,7 +27,8 @@ typedef struct ExampleCoreAudioContext {
 // The RemoteIO audio unit uses bus 0 for ouptut, and bus 1 for input.
 static int kOutputBus = 0;
 static int kInputBus = 1;
-static size_t kMaximumFramesPerBuffer = 1024;
+// This is the maximum slice size for RemoteIO (as observed in the field). We will double check at initialization time.
+static size_t kMaximumFramesPerBuffer = 1156;
 
 @interface ExampleCoreAudioDevice()
 
@@ -88,13 +89,9 @@ static size_t kMaximumFramesPerBuffer = 1024;
 
 - (nullable TVIAudioFormat *)renderFormat {
     if (!_renderingFormat) {
-        // Setup the AVAudioSession early for simplicity. You could also defer to `startRendering:` and `stopRendering:`.
+        // Setup the AVAudioSession early. You could also defer to `startRendering:` and `stopRendering:`.
         [self setupAVAudioSession];
 
-        /*
-         * Assume that the AVAudioSession has already been configured and started and that the values
-         * for sampleRate and IOBufferDuration are final.
-         */
         _renderingFormat = [[self class] activeRenderingFormat];
     }
 
@@ -149,8 +146,10 @@ static size_t kMaximumFramesPerBuffer = 1024;
 #pragma mark - TVIAudioDeviceCapturer
 
 - (nullable TVIAudioFormat *)captureFormat {
-    // We don't support capturing, and return a nil format to indicate this. The other TVIAudioDeviceCapturer methods
-    // are simply stubs.
+    /*
+     * We don't support capturing, and return a nil format to indicate this. The other TVIAudioDeviceCapturer methods
+     * are simply stubs.
+     */
     return nil;
 }
 
@@ -182,26 +181,15 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
     int8_t *audioBuffer = (int8_t *)bufferList->mBuffers[0].mData;
     UInt32 audioBufferSizeInBytes = bufferList->mBuffers[0].mDataByteSize;
 
-    // TODO: Will there ever be a case where stopping the AudioUnit from audioContextThread is non blocking?
-    if (numFrames <= context->maxFramesPerBuffer && numFrames != context->expectedFramesPerBuffer) {
-        // Generally, it's not a good idea to NSLog on a real-time audio thread. ....
-//        NSLog(@"Expected %u frames but got %u.", (unsigned int)context->expectedFramesPerBuffer, (unsigned int)numFrames);
-//        NSLog(@"AVAudioSession buffer duration: %0.1f msec / %0.2f frames / %0.0f Hz. Preferred %0.1f msec / %0.2f frames / %0.0f Hz",
-//              [AVAudioSession sharedInstance].IOBufferDuration * 1000,
-//              [AVAudioSession sharedInstance].IOBufferDuration * [AVAudioSession sharedInstance].sampleRate,
-//              [AVAudioSession sharedInstance].sampleRate,
-//              [AVAudioSession sharedInstance].preferredIOBufferDuration * 1000,
-//              [AVAudioSession sharedInstance].preferredIOBufferDuration * [AVAudioSession sharedInstance].sampleRate,
-//              [AVAudioSession sharedInstance].preferredSampleRate);
-    } else if (numFrames > context->maxFramesPerBuffer) {
+    // Render silence if there are temporary mismatches between CoreAudio and our rendering format.
+    if (numFrames > context->maxFramesPerBuffer) {
         NSLog(@"Can handle a max of %u frames but got %u.", (unsigned int)context->maxFramesPerBuffer, (unsigned int)numFrames);
-        // Render silence if there are temporary mismatches between CoreAudio and our rendering format.
         *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
         memset(audioBuffer, 0, audioBufferSizeInBytes);
         return noErr;
     }
 
-    // Pull decoded, mixed audio data from the media engine.
+    // Pull decoded, mixed audio data from the media engine into the AudioUnit's AudioBufferList.
     assert(numFrames <= context->maxFramesPerBuffer);
     assert(audioBufferSizeInBytes == (bufferList->mBuffers[0].mNumberChannels * 2 * numFrames));
     TVIAudioDeviceReadRenderData(context->deviceContext, audioBuffer, audioBufferSizeInBytes);
@@ -211,10 +199,12 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
 #pragma mark - Private (AVAudioSession and CoreAudio)
 
 + (nullable TVIAudioFormat *)activeRenderingFormat {
-//    const NSTimeInterval sessionBufferDuration = [AVAudioSession sharedInstance].IOBufferDuration;
-    const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
-//    const size_t sessionFramesPerBuffer = (size_t)(sessionSampleRate * sessionBufferDuration + .5);
+    /*
+     * Use the pre-determined maximum frame size. AudioUnit callbacks are variable, and in most sutations will be close
+     * to the `AVAudioSession.preferredIOBufferDuration` that we've requested.
+     */
     const size_t sessionFramesPerBuffer = kMaximumFramesPerBuffer;
+    const double sessionSampleRate = [AVAudioSession sharedInstance].sampleRate;
     const NSInteger sessionOutputChannels = [AVAudioSession sharedInstance].outputNumberOfChannels;
     size_t rendererChannels = sessionOutputChannels >= TVIAudioChannelsStereo ? TVIAudioChannelsStereo : TVIAudioChannelsMono;
 
@@ -457,7 +447,7 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
 
     NSLog(@"A route change ocurred while the AudioUnit was started. Checking the active audio format.");
 
-    // Determine if the format actually changed. We only care about sample rate and buffer sizes.
+    // Determine if the format actually changed. We only care about sample rate and number of channels.
     TVIAudioFormat *activeFormat = [[self class] activeRenderingFormat];
 
     if (![activeFormat isEqual:_renderingFormat]) {
