@@ -147,7 +147,7 @@ static size_t kMaximumFramesPerBuffer = 1156;
 
 - (nullable TVIAudioFormat *)captureFormat {
     /*
-     * We don't support capturing, and return a nil format to indicate this. The other TVIAudioDeviceCapturer methods
+     * We don't support capturing and return a nil format to indicate this. The other TVIAudioDeviceCapturer methods
      * are simply stubs.
      */
     return nil;
@@ -354,7 +354,6 @@ static OSStatus ExampleCoreAudioDevicePlayoutCallback(void *refCon,
     }
     return YES;
 }
-
 
 - (void)teardownAudioUnit {
     if (_audioUnit) {
